@@ -36,10 +36,11 @@ typedef struct erow {
 
 struct editorConfig {
   int cx, cy;
+  int rowoff;
   int screenrows;
   int screencols;
   int numRows;
-  erow row;
+  erow *row;
   struct termios orig_termios;
 };
 struct editorConfig E;
@@ -198,6 +199,20 @@ int getWindowSize(int *rows, int *cols) {
 }
 
 //-----------------------------------------------//
+//                  Row operation                //
+//-----------------------------------------------//
+void editorAppendRow(char *s, size_t lineLen) {
+  E.row = realloc(E.row, (sizeof(erow)) * (E.numRows + 1));
+  int at = E.numRows;
+
+  E.row[at].size = lineLen;
+  E.row[at].chars = malloc(lineLen + 1);
+  memcpy(E.row[at].chars, s, lineLen);
+  E.row[at].chars[lineLen] = '\0';
+  E.numRows++;
+}
+
+//-----------------------------------------------//
 //                  File i/o                     //
 //-----------------------------------------------//
 void editorOpen(char *fileName) {
@@ -210,14 +225,12 @@ void editorOpen(char *fileName) {
   ssize_t lineLen;
   lineLen = getline(&line, &lineCap, fp);
   if (lineLen != -1) {
-    while (lineLen > 0 &&
-           (line[lineLen - 1] == '\n' || line[lineLen - 1] == '\r'))
-      lineLen--;
-    E.row.size = lineLen;
-    E.row.chars = malloc(lineLen + 1);
-    memcpy(E.row.chars, line, lineLen);
-    E.row.chars[lineLen] = '\0';
-    E.numRows = 1;
+    while ((lineLen = getline(&line, &lineCap, fp)) != -1) {
+      while (lineLen > 0 &&
+             (line[lineLen - 1] == '\n' || line[lineLen - 1] == '\r'))
+        lineLen--;
+      editorAppendRow(line, lineLen);
+    }
   }
   free(line);
   fclose(fp);
@@ -247,11 +260,20 @@ void appendBuffFree(struct abuf *ab) { free(ab->b); }
 //-----------------------------------------------//
 //                  output                       //
 //-----------------------------------------------//
+void EditorScroll() {
+  if (E.cy < E.rowoff) {
+    E.rowoff = E.cy;
+  }
+  if (E.cy >= E.rowoff + E.screenrows) {
+    E.rowoff = E.cy - E.screenrows + 1;
+  }
+}
 // TODO: implement the ```:set number``` vim command
 void editorDrawRows(struct abuf *ab) {
   int y;
   for (y = 0; y <= E.screenrows; y++) {
-    if (y >= E.numRows) {
+    int filerow = y + E.rowoff;
+    if (filerow >= E.numRows) {
       if (E.numRows == 0 && y == E.screenrows / 3) {
         char welcome[80];
         int welcomelen = snprintf(welcome, sizeof(welcome),
@@ -274,10 +296,10 @@ void editorDrawRows(struct abuf *ab) {
         appendBuffer(ab, "~", 1);
       }
     } else {
-      int len = E.row.size;
+      int len = E.row[filerow].size;
       if (len > E.screencols)
         len = E.screencols;
-      appendBuffer(ab, E.row.chars, len);
+      appendBuffer(ab, E.row[filerow].chars, len);
     }
 
     appendBuffer(ab, "\x1b[K", 3);
@@ -288,6 +310,7 @@ void editorDrawRows(struct abuf *ab) {
 }
 
 void editorRefreshScreen() {
+  EditorScroll();
   struct abuf ab = ABUF_INIT;
 
   appendBuffer(&ab, "\x1b[?25l", 6);
@@ -313,23 +336,23 @@ void editorMoveCursor(int key) {
   case ARROW_LEFT:
     if (E.cx != 0) {
       E.cx--;
-      break;
     }
+    break;
   case ARROW_DOWN:
-    if (E.cy != E.screenrows - 1) {
+    if (E.cy < E.numRows) {
       E.cy++;
-      break;
     }
+    break;
   case ARROW_RIGHT:
     if (E.cx != E.screencols - 1) {
       E.cx++;
-      break;
     }
+    break;
   case ARROW_UP:
     if (E.cy != 0) {
       E.cy--;
-      break;
     }
+    break;
   }
 }
 
@@ -373,6 +396,8 @@ void initEditor() {
   E.cx = 0;
   E.cy = 0;
   E.numRows = 0;
+  E.rowoff = 0;
+  E.row = NULL;
   if (getWindowSize(&E.screenrows, &E.screencols) == -1)
     die("getWindowSize");
 }
